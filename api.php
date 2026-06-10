@@ -150,6 +150,13 @@ if ($wantsImage && $lastUser !== '') {
         'generationConfig' => ['responseModalities' => ['TEXT', 'IMAGE']],
     ];
     list($res, $code, $err) = callGemini($IMAGE_MODEL, $payload, $API_KEY);
+
+    // جرّب الموديل البديل وقت الازدحام
+    if (!$err && ($code === 503 || $code === 429)) {
+        list($res2, $code2, $err2) = callGemini($IMAGE_MODEL_FALLBACK, $payload, $API_KEY);
+        if (!$err2) { $res = $res2; $code = $code2; $err = $err2; }
+    }
+
     if (!$err && $code === 200) {
         $data = json_decode($res, true);
         $imageData = null; $mime = 'image/png'; $text = '';
@@ -168,8 +175,20 @@ if ($wantsImage && $lastUser !== '') {
             ], JSON_UNESCAPED_UNICODE);
             exit;
         }
+        echo json_encode(['reply' => $text !== '' ? $text : 'ما قدرت أولّد الصورة هلق، جرّب صياغة تانية.'], JSON_UNESCAPED_UNICODE);
+        exit;
     }
-    // إذا فشل توليد الصورة، بيكمل كمحادثة نصية عادية تحت
+
+    // خطأ بالموديل — رسالة واضحة بدل التحويل لمحادثة نصية
+    $data = json_decode($res, true);
+    $msg  = $data['error']['message'] ?? 'تعذّر توليد الصورة';
+    if ($code === 503 || $code === 429) {
+        $msg = 'موديل الصور مزحوم حالياً 😅 جرّب كمان دقيقة.';
+    } elseif ($code === 403 || stripos($msg, 'billing') !== false || stripos($msg, 'permission') !== false || stripos($msg, 'quota') !== false) {
+        $msg = 'توليد الصور بدّو تفعيل الفوترة (Billing) على حساب Google. المحادثة النصية شغّالة مجاناً.';
+    }
+    echo json_encode(['reply' => '⚠️ ' . $msg], JSON_UNESCAPED_UNICODE);
+    exit;
 }
 
 list($res, $code, $err) = callGemini($TEXT_MODEL, ['contents' => $contents], $API_KEY);
