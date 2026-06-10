@@ -57,23 +57,29 @@ function toEnglishPrompt($text, $apiKey, $model) {
 
 // توليد صورة عبر Pollinations (مجاني، بدون مفتاح)
 function pollinationsImage($prompt) {
-    $url = 'https://gen.pollinations.ai/image/' . rawurlencode($prompt)
-         . '?width=1024&height=1024&nologo=true&model=flux';
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_TIMEOUT        => 90,
-        CURLOPT_HTTPHEADER     => ['User-Agent: Mozilla/5.0'],
-    ]);
-    $body  = curl_exec($ch);
-    $code  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $ctype = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
-    curl_close($ch);
-    if ($code !== 200 || !$body || strpos($ctype, 'image') === false) {
-        return [null, 'تعذّر توليد الصورة حالياً، جرّب كمان مرة'];
+    $endpoints = [
+        'https://image.pollinations.ai/prompt/' . rawurlencode($prompt) . '?width=1024&height=1024&model=flux',
+        'https://gen.pollinations.ai/image/' . rawurlencode($prompt) . '?width=1024&height=1024&model=flux',
+    ];
+    $lastCode = 0;
+    foreach ($endpoints as $url) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_TIMEOUT        => 120,
+            CURLOPT_HTTPHEADER     => ['User-Agent: Mozilla/5.0', 'Accept: image/*'],
+        ]);
+        $body  = curl_exec($ch);
+        $code  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $ctype = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+        curl_close($ch);
+        $lastCode = $code;
+        if ($code === 200 && $body && strpos($ctype, 'image') !== false) {
+            return ['data:' . $ctype . ';base64,' . base64_encode($body), null];
+        }
     }
-    return ['data:' . $ctype . ';base64,' . base64_encode($body), null];
+    return [null, 'تعذّر توليد الصورة (كود ' . $lastCode . ')، جرّب كمان مرة'];
 }
 
 // ===================== توليد / تعديل صورة =====================
