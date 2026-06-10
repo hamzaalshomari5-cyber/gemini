@@ -6,6 +6,8 @@ header('Content-Type: application/json; charset=utf-8');
 $API_KEY     = getenv('GEMINI_API_KEY');   // مفتاح Gemini (للمحادثة) من Railway Variables
 $TEXT_MODEL  = 'gemini-2.5-flash';          // موديل المحادثة
 $IMAGE_MODEL = 'gemini-2.5-flash-image';    // يُستخدم فقط لتعديل صورة مرفوعة
+$CF_ACCOUNT = getenv('CF_ACCOUNT_ID'); // معرّف حساب Cloudflare
+$CF_TOKEN   = getenv('CF_API_TOKEN');  // مفتاح Cloudflare Workers AI (للصور)
 // =====================================================
 
 if (!$API_KEY) {
@@ -56,30 +58,32 @@ function toEnglishPrompt($text, $apiKey, $model) {
 }
 
 // توليد صورة عبر Pollinations (مجاني، بدون مفتاح)
-function pollinationsImage($prompt) {
-    $endpoints = [
-        'https://image.pollinations.ai/prompt/' . rawurlencode($prompt) . '?width=1024&height=1024&model=flux',
-        'https://gen.pollinations.ai/image/' . rawurlencode($prompt) . '?width=1024&height=1024&model=flux',
-    ];
-    $lastCode = 0;
-    foreach ($endpoints as $url) {
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_TIMEOUT        => 120,
-            CURLOPT_HTTPHEADER     => ['User-Agent: Mozilla/5.0', 'Accept: image/*'],
-        ]);
-        $body  = curl_exec($ch);
-        $code  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $ctype = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
-        curl_close($ch);
-        $lastCode = $code;
-        if ($code === 200 && $body && strpos($ctype, 'image') !== false) {
-            return ['data:' . $ctype . ';base64,' . base64_encode($body), null];
-        }
+function cfImage($prompt, $account, $token) {
+    if (!$account || !$token) {
+        return [null, 'لازم تضيف CF_ACCOUNT_ID و CF_API_TOKEN على Railway'];
     }
-    return [null, 'تعذّر توليد الصورة (كود ' . $lastCode . ')، جرّب كمان مرة'];
+    $url = "https://api.cloudflare.com/client/v4/accounts/{$account}/ai/run/@cf/black-forest-labs/flux-1-schnell";
+    $ch  = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST           => true,
+        CURLOPT_HTTPHEADER     => [
+            'Authorization: Bearer ' . $token,
+            'Content-Type: application/json',
+        ],
+        CURLOPT_POSTFIELDS     => json_encode(['prompt' => $prompt, 'steps' => 4]),
+        CURLOPT_TIMEOUT        => 120,
+    ]);
+    $res  = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    $data = json_decode($res, true);
+    if ($code === 200 && !empty($data['result']['image'])) {
+        return ['data:image/jpeg;base64,' . $data['result']['image'], null];
+    }
+    $msg = $data['errors'][0]['message'] ?? ('كود ' . $code);
+    return [null, 'تعذّر توليد الصورة (' . $msg . ')'];
 }
 
 // ===================== توليد / تعديل صورة =====================
@@ -119,7 +123,7 @@ if ($action === 'image') {
 
     // توليد صورة جديدة → Pollinations (مجاني)
     $eng = toEnglishPrompt($prompt, $API_KEY, $TEXT_MODEL);
-    list($img, $perr) = pollinationsImage($eng);
+    list($img, $perr) = cfImage($eng, $CF_ACCOUNT, $CF_TOKEN);
     if (!$img) { http_response_code(503); echo json_encode(['error' => $perr], JSON_UNESCAPED_UNICODE); exit; }
     echo json_encode(['image' => $img], JSON_UNESCAPED_UNICODE);
     exit;
@@ -151,7 +155,7 @@ foreach ($imageWords as $w) {
 
 if ($wantsImage && $lastUser !== '') {
     $eng = toEnglishPrompt($lastUser, $API_KEY, $TEXT_MODEL);
-    list($img, $perr) = pollinationsImage($eng);
+    list($img, $perr) = cfImage($eng, $CF_ACCOUNT, $CF_TOKEN);
     if ($img) { echo json_encode(['image' => $img], JSON_UNESCAPED_UNICODE); exit; }
     echo json_encode(['reply' => '⚠️ ' . $perr], JSON_UNESCAPED_UNICODE);
     exit;
