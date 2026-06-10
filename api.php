@@ -6,6 +6,7 @@ header('Content-Type: application/json; charset=utf-8');
 $API_KEY     = getenv('GEMINI_API_KEY');      // ضع المفتاح في Variables على Railway
 $TEXT_MODEL  = 'gemini-2.5-flash';            // موديل المحادثة
 $IMAGE_MODEL = 'gemini-2.5-flash-image';      // موديل الصور (بدّله لـ gemini-3.1-flash-image للأحدث)
+$IMAGE_MODEL_FALLBACK = 'gemini-3.1-flash-image-preview'; // موديل بديل وقت الازدحام
 // =====================================================
 
 if (!$API_KEY) {
@@ -17,24 +18,32 @@ if (!$API_KEY) {
 $input  = json_decode(file_get_contents('php://input'), true);
 $action = $input['action'] ?? 'chat';
 
-function callGemini($model, $payload, $apiKey) {
+function callGemini($model, $payload, $apiKey, $retries = 3) {
     $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent";
-    $ch  = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST           => true,
-        CURLOPT_HTTPHEADER     => [
-            'Content-Type: application/json',
-            'x-goog-api-key: ' . $apiKey,
-        ],
-        CURLOPT_POSTFIELDS     => json_encode($payload, JSON_UNESCAPED_UNICODE),
-        CURLOPT_TIMEOUT        => 120,
-    ]);
-    $res  = curl_exec($ch);
-    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $err  = curl_error($ch);
-    curl_close($ch);
-    return [$res, $code, $err];
+    for ($attempt = 0; ; $attempt++) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'x-goog-api-key: ' . $apiKey,
+            ],
+            CURLOPT_POSTFIELDS     => json_encode($payload, JSON_UNESCAPED_UNICODE),
+            CURLOPT_TIMEOUT        => 120,
+        ]);
+        $res  = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err  = curl_error($ch);
+        curl_close($ch);
+
+        // إعادة المحاولة عند الازدحام المؤقت (503/429)
+        if (!$err && ($code === 503 || $code === 429) && $attempt < $retries) {
+            sleep(2);
+            continue;
+        }
+        return [$res, $code, $err];
+    }
 }
 
 // ===================== توليد الصور =====================
@@ -61,6 +70,13 @@ if ($action === 'image') {
     ];
 
     list($res, $code, $err) = callGemini($IMAGE_MODEL, $payload, $API_KEY);
+
+    // لو الموديل ضل مزحوم بعد المحاولات، جرّب الموديل البديل
+    if (!$err && ($code === 503 || $code === 429)) {
+        list($res2, $code2, $err2) = callGemini($IMAGE_MODEL_FALLBACK, $payload, $API_KEY);
+        if (!$err2 && $code2 === 200) { $res = $res2; $code = $code2; $err = $err2; }
+    }
+
     if ($err) {
         http_response_code(500);
         echo json_encode(['error' => 'خطأ بالاتصال: ' . $err], JSON_UNESCAPED_UNICODE);
@@ -69,8 +85,12 @@ if ($action === 'image') {
 
     $data = json_decode($res, true);
     if ($code !== 200) {
+        $msg = $data['error']['message'] ?? 'خطأ غير معروف';
+        if ($code === 503 || $code === 429) {
+            $msg = 'الموديل مزحوم حالياً 😅 جرّب كمان دقيقة.';
+        }
         http_response_code($code);
-        echo json_encode(['error' => $data['error']['message'] ?? 'خطأ غير معروف'], JSON_UNESCAPED_UNICODE);
+        echo json_encode(['error' => $msg], JSON_UNESCAPED_UNICODE);
         exit;
     }
 
