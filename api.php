@@ -111,6 +111,47 @@ if (empty($contents)) {
     exit;
 }
 
+// كشف طلب الصورة تلقائياً ضمن المحادثة العادية
+$lastUser = '';
+for ($i = count($messages) - 1; $i >= 0; $i--) {
+    if ((($messages[$i]['role'] ?? '') !== 'assistant')) { $lastUser = $messages[$i]['content'] ?? ''; break; }
+}
+$imageWords = ['ارسم', 'إرسم', 'ارسملي', 'رسمة', 'صورة', 'صوره', 'صورّ', 'سويلي', 'اعمللي صورة', 'اعملي صورة', 'draw', 'image', 'picture', 'generate image', 'paint'];
+$wantsImage = false;
+foreach ($imageWords as $w) {
+    if (function_exists('mb_stripos') ? (mb_stripos($lastUser, $w) !== false) : (stripos($lastUser, $w) !== false)) {
+        $wantsImage = true; break;
+    }
+}
+
+if ($wantsImage && $lastUser !== '') {
+    $payload = [
+        'contents'         => [['parts' => [['text' => $lastUser]]]],
+        'generationConfig' => ['responseModalities' => ['TEXT', 'IMAGE']],
+    ];
+    list($res, $code, $err) = callGemini($IMAGE_MODEL, $payload, $API_KEY);
+    if (!$err && $code === 200) {
+        $data = json_decode($res, true);
+        $imageData = null; $mime = 'image/png'; $text = '';
+        foreach ($data['candidates'][0]['content']['parts'] ?? [] as $part) {
+            if (isset($part['inlineData']['data'])) {
+                $imageData = $part['inlineData']['data'];
+                $mime      = $part['inlineData']['mimeType'] ?? 'image/png';
+            } elseif (isset($part['text'])) {
+                $text .= $part['text'];
+            }
+        }
+        if ($imageData) {
+            echo json_encode([
+                'reply' => $text,
+                'image' => "data:{$mime};base64,{$imageData}",
+            ], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+    }
+    // إذا فشل توليد الصورة، بيكمل كمحادثة نصية عادية تحت
+}
+
 list($res, $code, $err) = callGemini($TEXT_MODEL, ['contents' => $contents], $API_KEY);
 if ($err) {
     http_response_code(500);

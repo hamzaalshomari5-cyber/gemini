@@ -189,8 +189,8 @@ async function sendChat() {
     hideTyping();
     if (data.error) { addMsg('⚠️ ' + data.error, 'ai'); }
     else {
-      addMsg(data.reply, 'ai');
-      history.push({ role: 'assistant', content: data.reply });
+      if (data.reply) { addMsg(data.reply, 'ai'); history.push({ role: 'assistant', content: data.reply }); }
+      if (data.image) addImage(data.image);
     }
   } catch (e) {
     hideTyping();
