@@ -86,6 +86,34 @@ function cfImage($prompt, $account, $token) {
     return [null, 'تعذّر توليد الصورة (' . $msg . ')'];
 }
 
+// تعديل صورة مرفوعة عبر Cloudflare (img2img مجاني)
+function cfImageEdit($prompt, $imageBinary, $account, $token) {
+    if (!$account || !$token) {
+        return [null, 'لازم تضيف CF_ACCOUNT_ID و CF_API_TOKEN على Railway'];
+    }
+    $url   = "https://api.cloudflare.com/client/v4/accounts/{$account}/ai/run/@cf/runwayml/stable-diffusion-v1-5-img2img";
+    $bytes = array_values(unpack('C*', $imageBinary)); // الصورة كمصفوفة بايتات
+    $payload = ['prompt' => $prompt, 'image' => $bytes, 'strength' => 0.65, 'num_steps' => 20];
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST           => true,
+        CURLOPT_HTTPHEADER     => ['Authorization: Bearer ' . $token, 'Content-Type: application/json'],
+        CURLOPT_POSTFIELDS     => json_encode($payload),
+        CURLOPT_TIMEOUT        => 180,
+    ]);
+    $res   = curl_exec($ch);
+    $code  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $ctype = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+    curl_close($ch);
+    if ($code === 200 && strpos($ctype, 'image') !== false) {
+        return ['data:' . $ctype . ';base64,' . base64_encode($res), null];
+    }
+    $data = json_decode($res, true);
+    $msg  = $data['errors'][0]['message'] ?? ('كود ' . $code);
+    return [null, 'تعذّر تعديل الصورة (' . $msg . ')'];
+}
+
 // ===================== توليد / تعديل صورة =====================
 if ($action === 'image') {
     $prompt = trim($input['prompt'] ?? '');
@@ -95,29 +123,18 @@ if ($action === 'image') {
         exit;
     }
 
-    // تعديل صورة مرفوعة → عبر Gemini (بدّو تفعيل فوترة)
+    // تعديل صورة مرفوعة → Cloudflare img2img (مجاني)
     if (!empty($input['image']['data'])) {
-        $payload = [
-            'contents' => [['parts' => [
-                ['text' => $prompt],
-                ['inlineData' => ['mimeType' => $input['image']['mime'] ?? 'image/png', 'data' => $input['image']['data']]],
-            ]]],
-            'generationConfig' => ['responseModalities' => ['TEXT', 'IMAGE']],
-        ];
-        list($res, $code, $err) = callGemini($IMAGE_MODEL, $payload, $API_KEY);
-        $data = json_decode($res, true);
-        if (!$err && $code === 200) {
-            $imageData = null; $mime = 'image/png'; $text = '';
-            foreach ($data['candidates'][0]['content']['parts'] ?? [] as $part) {
-                if (isset($part['inlineData']['data'])) { $imageData = $part['inlineData']['data']; $mime = $part['inlineData']['mimeType'] ?? 'image/png'; }
-                elseif (isset($part['text'])) { $text .= $part['text']; }
-            }
-            if ($imageData) {
-                echo json_encode(['image' => "data:{$mime};base64,{$imageData}", 'text' => $text], JSON_UNESCAPED_UNICODE);
-                exit;
-            }
+        $binary = base64_decode($input['image']['data']);
+        if (!$binary) {
+            http_response_code(400);
+            echo json_encode(['error' => 'الصورة غير صالحة'], JSON_UNESCAPED_UNICODE);
+            exit;
         }
-        echo json_encode(['error' => 'تعديل الصور بدّو تفعيل الفوترة (Billing) على حساب Google'], JSON_UNESCAPED_UNICODE);
+        $eng = toEnglishPrompt($prompt, $API_KEY, $TEXT_MODEL);
+        list($img, $perr) = cfImageEdit($eng, $binary, $CF_ACCOUNT, $CF_TOKEN);
+        if (!$img) { http_response_code(503); echo json_encode(['error' => $perr], JSON_UNESCAPED_UNICODE); exit; }
+        echo json_encode(['image' => $img], JSON_UNESCAPED_UNICODE);
         exit;
     }
 
