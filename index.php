@@ -98,6 +98,15 @@
     <div class="sheet">
       <span class="close-x" data-close>×</span>
       <h3>الإعدادات</h3>
+      <div style="font-size:14px;color:var(--muted);margin-bottom:8px;">محرّك المحادثة</div>
+      <div class="tabs" style="flex-wrap:wrap;">
+        <div class="tab active" data-model="gemini" style="flex:1 1 28%;font-size:13px;padding:9px 6px;">Gemini</div>
+        <div class="tab" data-model="cloudflare" style="flex:1 1 28%;font-size:13px;padding:9px 6px;">Cloudflare</div>
+        <div class="tab" data-model="groq" style="flex:1 1 28%;font-size:13px;padding:9px 6px;">Groq</div>
+        <div class="tab" data-model="openrouter" style="flex:1 1 28%;font-size:13px;padding:9px 6px;">OpenRouter</div>
+        <div class="tab" data-model="claude" style="flex:1 1 28%;font-size:13px;padding:9px 6px;">Claude</div>
+      </div>
+      <button class="row" id="multiToggle">⚡ كل المحرّكات معاً: <b id="multiState" style="margin-right:6px;color:var(--accent2);">إيقاف</b></button>
       <button class="row" id="clearBtn">🗑️ مسح المحادثة</button>
       <div class="note">المساعد الذكي — مدعوم بـ Gemini و Cloudflare AI</div>
     </div>
@@ -151,6 +160,25 @@ document.querySelectorAll('.overlay').forEach(o=>o.addEventListener('click',e=>{
 function openSheet(id){ document.getElementById(id).classList.add('open'); }
 function closeAll(){ document.querySelectorAll('.overlay').forEach(o=>o.classList.remove('open')); }
 document.getElementById('clearBtn').onclick=()=>{ history=[]; chat.innerHTML='<div class="welcome">تم مسح المحادثة ✅<br>ابدأ من جديد</div>'; closeAll(); };
+
+let aiModel='gemini';
+let multiMode=false;
+let availableEngines=['gemini','cloudflare'];
+const engineLabels={gemini:'Gemini',cloudflare:'Cloudflare',groq:'Groq',openrouter:'OpenRouter',claude:'Claude'};
+
+document.querySelectorAll('.tab[data-model]').forEach(t=>{
+  t.onclick=()=>{
+    document.querySelectorAll('.tab[data-model]').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    aiModel=t.getAttribute('data-model');
+  };
+});
+
+const multiToggle=document.getElementById('multiToggle'), multiState=document.getElementById('multiState');
+multiToggle.onclick=()=>{ multiMode=!multiMode; multiState.textContent=multiMode?'تشغيل':'إيقاف'; };
+
+// جلب المحرّكات المفعّلة
+fetch('api.php?action=engines').then(r=>r.json()).then(d=>{ if(d.engines&&d.engines.length) availableEngines=d.engines; }).catch(()=>{});
 
 const tabLogin=document.getElementById('tabLogin'), tabSignup=document.getElementById('tabSignup'), acSubmit=document.getElementById('acSubmit');
 tabLogin.onclick=()=>{ tabLogin.classList.add('active'); tabSignup.classList.remove('active'); acSubmit.textContent='تسجيل الدخول'; };
@@ -217,15 +245,50 @@ function showTyping(){ const t=document.createElement('div'); t.className='typin
 function hideTyping(){ const t=document.getElementById('typing'); if(t) t.remove(); }
 function setBusy(s){ busy=s; send.disabled=imgBtn.disabled=attachBtn.disabled=s; }
 
+function addLabeledMsg(text,label){
+  clearWelcome();
+  const d=document.createElement('div'); d.className='msg ai';
+  const h=document.createElement('div'); h.style.cssText='font-size:11px;color:var(--accent2);margin-bottom:5px;font-weight:700;'; h.textContent=label;
+  const b=document.createElement('div'); b.textContent=text;
+  d.appendChild(h); d.appendChild(b); chat.appendChild(d); chat.scrollTop=chat.scrollHeight;
+}
+
+async function askEngine(engineId,label){
+  const d=document.createElement('div'); d.className='msg ai';
+  const head=document.createElement('div'); head.style.cssText='font-size:11px;color:var(--accent2);margin-bottom:5px;font-weight:700;'; head.textContent='🔹 '+label;
+  const bodyEl=document.createElement('div'); bodyEl.textContent='...';
+  d.appendChild(head); d.appendChild(bodyEl); chat.appendChild(d); chat.scrollTop=chat.scrollHeight;
+  try{
+    const r=await fetch('api.php',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'chat',model:engineId,multi:true,messages:history})});
+    const data=await r.json();
+    bodyEl.textContent = data.error ? ('⚠️ '+data.error) : (data.reply||'...');
+  }catch(e){ bodyEl.textContent='⚠️ تعذّر الاتصال'; }
+  chat.scrollTop=chat.scrollHeight;
+}
+
 async function sendChat(){
   const text=input.value.trim(); if(!text||busy) return;
   setBusy(true); addMsg(text,'user'); history.push({role:'user',content:text});
-  input.value=''; input.style.height='auto'; showTyping();
+  input.value=''; input.style.height='auto';
+
+  if(multiMode){
+    await Promise.all(availableEngines.map(e=>askEngine(e,engineLabels[e]||e)));
+    setBusy(false); return;
+  }
+
+  showTyping();
   try{
-    const r=await fetch('api.php',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'chat',messages:history})});
+    const r=await fetch('api.php',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'chat',model:aiModel,messages:history})});
     const data=await r.json(); hideTyping();
     if(data.error){ addMsg('⚠️ '+data.error,'ai'); }
-    else{ if(data.reply){ addMsg(data.reply,'ai'); history.push({role:'assistant',content:data.reply}); } if(data.image) addImage(data.image); }
+    else{
+      if(data.reply){
+        if(data.engine && data.engine!==aiModel) addLabeledMsg(data.reply,'🔹 via '+(engineLabels[data.engine]||data.engine));
+        else addMsg(data.reply,'ai');
+        history.push({role:'assistant',content:data.reply});
+      }
+      if(data.image) addImage(data.image);
+    }
   }catch(e){ hideTyping(); addMsg('⚠️ تعذّر الاتصال بالسيرفر','ai'); }
   setBusy(false);
 }
